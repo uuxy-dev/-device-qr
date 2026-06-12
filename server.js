@@ -1,24 +1,21 @@
 const express = require('express');
-const fs = require('fs');
-const path = require('path');
+const { MongoClient } = require('mongodb');
 const QRCode = require('qrcode');
 
 const app = express();
 const PORT = process.env.PORT || 3001;
-const DATA_DIR = process.env.DATA_DIR || path.join(__dirname, 'data');
-const DATA_FILE = path.join(DATA_DIR, 'devices.json');
+const MONGODB_URI = process.env.MONGODB_URI || 'mongodb://localhost:27017';
 
 app.use(express.json());
 app.use(express.urlencoded({ extended: true }));
 
-function loadDevices() {
-  if (!fs.existsSync(DATA_FILE)) return {};
-  return JSON.parse(fs.readFileSync(DATA_FILE, 'utf8'));
-}
+let col; // devices collection
 
-function saveDevices(devices) {
-  if (!fs.existsSync(DATA_DIR)) fs.mkdirSync(DATA_DIR, { recursive: true });
-  fs.writeFileSync(DATA_FILE, JSON.stringify(devices, null, 2), 'utf8');
+async function connect() {
+  const client = new MongoClient(MONGODB_URI);
+  await client.connect();
+  col = client.db('device-qr').collection('devices');
+  console.log('MongoDB 已连接');
 }
 
 function genId() {
@@ -26,17 +23,17 @@ function genId() {
 }
 
 const STATUS_COLOR = {
-  '正常':   '#22c55e',
-  '维修中': '#f59e0b',
-  '待维护': '#ef4444',
+  '正常':     '#22c55e',
+  '维修中':   '#f59e0b',
+  '待维护':   '#ef4444',
   '无法维修': '#6b7280',
 };
 
 // ─── 主页：设备列表 ───────────────────────────────────────────
-app.get('/', (req, res) => {
-  const devices = loadDevices();
+app.get('/', async (req, res) => {
+  const devices = await col.find({}).toArray();
 
-  const cards = Object.values(devices).map(d => {
+  const cards = devices.map(d => {
     const currentClaim = d.claims.find(c => !c.returnedAt);
     return `
     <div class="device-card">
@@ -74,10 +71,9 @@ app.get('/', (req, res) => {
 });
 
 // ─── 添加设备 ─────────────────────────────────────────────────
-app.post('/device/add', (req, res) => {
-  const devices = loadDevices();
+app.post('/device/add', async (req, res) => {
   const id = genId();
-  devices[id] = {
+  await col.insertOne({
     id,
     name: req.body.name.trim(),
     owner: req.body.owner.trim(),
@@ -85,15 +81,13 @@ app.post('/device/add', (req, res) => {
     notes: '',
     claims: [],
     createdAt: new Date().toLocaleString('zh-CN'),
-  };
-  saveDevices(devices);
+  });
   res.redirect('/');
 });
 
 // ─── 设备详情页 ───────────────────────────────────────────────
-app.get('/device/:id', (req, res) => {
-  const devices = loadDevices();
-  const d = devices[req.params.id];
+app.get('/device/:id', async (req, res) => {
+  const d = await col.findOne({ id: req.params.id });
   if (!d) return res.status(404).send('设备不存在');
 
   const currentClaim = d.claims.find(c => !c.returnedAt);
@@ -115,7 +109,6 @@ app.get('/device/:id', (req, res) => {
     </div>
     <div class="container">
 
-      <!-- 设备信息 -->
       <div class="card">
         <h2 class="section-title">设备信息</h2>
         <div class="info-row"><span>设备名称</span><span>${d.name}</span></div>
@@ -133,16 +126,15 @@ app.get('/device/:id', (req, res) => {
         </div>
       </div>
 
-      <!-- 更新状态 -->
       <div class="card">
         <h2 class="section-title">更新状态</h2>
         <form method="POST" action="/device/${d.id}/status">
           <div class="form-group">
             <label>设备状态</label>
             <select name="status">
-              <option value="正常"   ${d.status === '正常'   ? 'selected' : ''}>正常</option>
-              <option value="维修中" ${d.status === '维修中' ? 'selected' : ''}>维修中</option>
-              <option value="待维护" ${d.status === '待维护' ? 'selected' : ''}>待维护（请填写故障说明）</option>
+              <option value="正常"     ${d.status === '正常'     ? 'selected' : ''}>正常</option>
+              <option value="维修中"   ${d.status === '维修中'   ? 'selected' : ''}>维修中</option>
+              <option value="待维护"   ${d.status === '待维护'   ? 'selected' : ''}>待维护（请填写故障说明）</option>
               <option value="无法维修" ${d.status === '无法维修' ? 'selected' : ''}>无法维修</option>
             </select>
           </div>
@@ -154,7 +146,6 @@ app.get('/device/:id', (req, res) => {
         </form>
       </div>
 
-      <!-- 领用 / 归还 -->
       <div class="card">
         <h2 class="section-title">${currentClaim ? '归还设备' : '领用设备'}</h2>
         ${currentClaim ? `
@@ -180,7 +171,6 @@ app.get('/device/:id', (req, res) => {
         `}
       </div>
 
-      <!-- 领用历史 -->
       <div class="card">
         <h2 class="section-title">领用记录</h2>
         <div style="overflow-x:auto">
@@ -196,46 +186,46 @@ app.get('/device/:id', (req, res) => {
 });
 
 // ─── 更新状态 ─────────────────────────────────────────────────
-app.post('/device/:id/status', (req, res) => {
-  const devices = loadDevices();
-  if (!devices[req.params.id]) return res.status(404).send('设备不存在');
-  devices[req.params.id].status = req.body.status;
-  devices[req.params.id].notes = (req.body.notes || '').trim();
-  saveDevices(devices);
+app.post('/device/:id/status', async (req, res) => {
+  await col.updateOne(
+    { id: req.params.id },
+    { $set: { status: req.body.status, notes: (req.body.notes || '').trim() } }
+  );
   res.redirect(`/device/${req.params.id}`);
 });
 
 // ─── 领用 ─────────────────────────────────────────────────────
-app.post('/device/:id/claim', (req, res) => {
-  const devices = loadDevices();
-  if (!devices[req.params.id]) return res.status(404).send('设备不存在');
-  devices[req.params.id].claims.push({
-    claimedBy: req.body.claimedBy.trim(),
-    reason: (req.body.reason || '').trim(),
-    claimedAt: new Date().toLocaleString('zh-CN'),
-    returnedAt: null,
-  });
-  saveDevices(devices);
+app.post('/device/:id/claim', async (req, res) => {
+  await col.updateOne(
+    { id: req.params.id },
+    { $push: { claims: {
+      claimedBy: req.body.claimedBy.trim(),
+      reason: (req.body.reason || '').trim(),
+      claimedAt: new Date().toLocaleString('zh-CN'),
+      returnedAt: null,
+    }}}
+  );
   res.redirect(`/device/${req.params.id}`);
 });
 
 // ─── 归还 ─────────────────────────────────────────────────────
-app.post('/device/:id/return', (req, res) => {
-  const devices = loadDevices();
-  if (!devices[req.params.id]) return res.status(404).send('设备不存在');
-  const claim = devices[req.params.id].claims.find(c => !c.returnedAt);
-  if (claim) claim.returnedAt = new Date().toLocaleString('zh-CN');
-  saveDevices(devices);
+app.post('/device/:id/return', async (req, res) => {
+  const d = await col.findOne({ id: req.params.id });
+  if (d) {
+    const claims = d.claims.map(c =>
+      !c.returnedAt ? { ...c, returnedAt: new Date().toLocaleString('zh-CN') } : c
+    );
+    await col.updateOne({ id: req.params.id }, { $set: { claims } });
+  }
   res.redirect(`/device/${req.params.id}`);
 });
 
 // ─── 二维码页 ─────────────────────────────────────────────────
 app.get('/qr/:id', async (req, res) => {
-  const devices = loadDevices();
-  const d = devices[req.params.id];
+  const d = await col.findOne({ id: req.params.id });
   if (!d) return res.status(404).send('设备不存在');
 
-  const url = `http://${req.headers.host}/device/${d.id}`;
+  const url = `https://${req.headers.host}/device/${d.id}`;
   const qrImg = await QRCode.toDataURL(url, { width: 280, margin: 2, color: { dark: '#1a1a1a' } });
 
   res.send(`<!DOCTYPE html>
@@ -245,19 +235,19 @@ app.get('/qr/:id', async (req, res) => {
   <meta name="viewport" content="width=device-width,initial-scale=1">
   <title>${d.name} 二维码</title>
   <style>
-    body { margin:0; font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif;
-           background:#f0f2f5; display:flex; justify-content:center; align-items:center; min-height:100vh; }
-    .qr-card { background:white; border-radius:16px; padding:36px 32px; text-align:center;
-               box-shadow:0 4px 24px rgba(0,0,0,.12); max-width:340px; width:100%; }
-    h1 { font-size:22px; margin-bottom:4px; }
-    .owner { color:#888; font-size:14px; margin-bottom:24px; }
-    img { width:240px; height:240px; border:8px solid #f4f4f4; border-radius:8px; }
-    .url { font-size:11px; color:#bbb; margin-top:10px; word-break:break-all; }
-    .btns { margin-top:20px; display:flex; gap:10px; justify-content:center; }
-    .btn { padding:10px 20px; border-radius:8px; font-size:13px; cursor:pointer; border:none; }
-    .btn-blue { background:#1a73e8; color:white; }
-    .btn-outline { background:white; color:#1a73e8; border:1px solid #1a73e8; text-decoration:none; display:inline-block; }
-    @media print { .btns{display:none} body{background:white} }
+    body{margin:0;font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif;
+         background:#f0f2f5;display:flex;justify-content:center;align-items:center;min-height:100vh}
+    .qr-card{background:white;border-radius:16px;padding:36px 32px;text-align:center;
+             box-shadow:0 4px 24px rgba(0,0,0,.12);max-width:340px;width:100%}
+    h1{font-size:22px;margin-bottom:4px}
+    .owner{color:#888;font-size:14px;margin-bottom:24px}
+    img{width:240px;height:240px;border:8px solid #f4f4f4;border-radius:8px}
+    .url{font-size:11px;color:#bbb;margin-top:10px;word-break:break-all}
+    .btns{margin-top:20px;display:flex;gap:10px;justify-content:center}
+    .btn{padding:10px 20px;border-radius:8px;font-size:13px;cursor:pointer;border:none}
+    .btn-blue{background:#1a73e8;color:white}
+    .btn-outline{background:white;color:#1a73e8;border:1px solid #1a73e8;text-decoration:none;display:inline-block}
+    @media print{.btns{display:none}body{background:white}}
   </style>
 </head>
 <body>
@@ -325,8 +315,11 @@ function html(title, body) {
 </html>`;
 }
 
-app.listen(PORT, '0.0.0.0', () => {
-  console.log(`\n设备管理系统已启动`);
-  console.log(`本机访问：http://localhost:${PORT}`);
-  console.log(`局域网手机扫码访问：先获取本机IP，然后用 http://[你的IP]:${PORT} 访问\n`);
+connect().then(() => {
+  app.listen(PORT, '0.0.0.0', () => {
+    console.log(`设备管理系统已启动：http://localhost:${PORT}`);
+  });
+}).catch(err => {
+  console.error('数据库连接失败:', err.message);
+  process.exit(1);
 });
