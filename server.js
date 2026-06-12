@@ -209,8 +209,23 @@ app.get('/device/:id', async (req, res) => {
         </div>
       </div>
 
+      <div class="card" style="border:1px solid #fee2e2">
+        <h2 class="section-title" style="color:#ef4444">危险操作</h2>
+        <p style="font-size:14px;color:#666;margin-bottom:14px">删除后无法恢复，包括所有领用记录。</p>
+        <form method="POST" action="/device/${d.id}/delete"
+              onsubmit="return confirm('确定要删除「${d.name}」吗？此操作不可撤销。')">
+          <button type="submit" class="btn btn-red">删除此设备</button>
+        </form>
+      </div>
+
     </div>
   `));
+});
+
+// ─── 删除设备 ─────────────────────────────────────────────────
+app.post('/device/:id/delete', async (req, res) => {
+  await q('DELETE FROM devices WHERE id = $1', [req.params.id]);
+  res.redirect('/');
 });
 
 // ─── 修改名称/负责人 ──────────────────────────────────────────
@@ -332,6 +347,8 @@ function html(title, body) {
     .btn-outline:hover{background:#f0f7ff}
     .btn-green{background:#22c55e}
     .btn-green:hover{background:#16a34a}
+    .btn-red{background:#ef4444}
+    .btn-red:hover{background:#dc2626}
     .notice{background:#fff8e1;border-radius:8px;padding:12px 16px;font-size:14px;margin-bottom:14px}
     .device-grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(280px,1fr));gap:16px}
     .device-card{background:white;border-radius:12px;padding:20px;box-shadow:0 2px 8px rgba(0,0,0,.07)}
