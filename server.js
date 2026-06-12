@@ -1,21 +1,33 @@
 const express = require('express');
-const { MongoClient } = require('mongodb');
+const { Pool } = require('pg');
 const QRCode = require('qrcode');
 
 const app = express();
 const PORT = process.env.PORT || 3001;
-const MONGODB_URI = process.env.MONGODB_URI || 'mongodb://localhost:27017';
 
-app.use(express.json());
-app.use(express.urlencoded({ extended: true }));
+const pool = new Pool({
+  connectionString: process.env.DATABASE_URL,
+  ssl: { rejectUnauthorized: false },
+});
 
-let col; // devices collection
+async function q(text, params) {
+  const { rows } = await pool.query(text, params);
+  return rows;
+}
 
-async function connect() {
-  const client = new MongoClient(MONGODB_URI);
-  await client.connect();
-  col = client.db('device-qr').collection('devices');
-  console.log('MongoDB 已连接');
+async function initDb() {
+  await pool.query(`
+    CREATE TABLE IF NOT EXISTS devices (
+      id         TEXT PRIMARY KEY,
+      name       TEXT NOT NULL,
+      owner      TEXT NOT NULL,
+      status     TEXT DEFAULT '正常',
+      notes      TEXT DEFAULT '',
+      claims     JSONB DEFAULT '[]',
+      created_at TEXT
+    )
+  `);
+  console.log('数据库初始化完成');
 }
 
 function genId() {
@@ -29,9 +41,12 @@ const STATUS_COLOR = {
   '无法维修': '#6b7280',
 };
 
+app.use(express.json());
+app.use(express.urlencoded({ extended: true }));
+
 // ─── 主页：设备列表 ───────────────────────────────────────────
 app.get('/', async (req, res) => {
-  const devices = await col.find({}).toArray();
+  const devices = await q('SELECT * FROM devices ORDER BY created_at');
 
   const cards = devices.map(d => {
     const currentClaim = d.claims.find(c => !c.returnedAt);
@@ -51,9 +66,7 @@ app.get('/', async (req, res) => {
   }).join('');
 
   res.send(html('设备管理系统', `
-    <div class="top-bar">
-      <h1>设备管理系统</h1>
-    </div>
+    <div class="top-bar"><h1>设备管理系统</h1></div>
     <div class="container">
       <div class="card">
         <h2 class="section-title">添加新设备</h2>
@@ -73,21 +86,17 @@ app.get('/', async (req, res) => {
 // ─── 添加设备 ─────────────────────────────────────────────────
 app.post('/device/add', async (req, res) => {
   const id = genId();
-  await col.insertOne({
-    id,
-    name: req.body.name.trim(),
-    owner: req.body.owner.trim(),
-    status: '正常',
-    notes: '',
-    claims: [],
-    createdAt: new Date().toLocaleString('zh-CN'),
-  });
+  await q(
+    `INSERT INTO devices (id, name, owner, status, notes, claims, created_at)
+     VALUES ($1, $2, $3, '正常', '', '[]', $4)`,
+    [id, req.body.name.trim(), req.body.owner.trim(), new Date().toLocaleString('zh-CN')]
+  );
   res.redirect('/');
 });
 
 // ─── 设备详情页 ───────────────────────────────────────────────
 app.get('/device/:id', async (req, res) => {
-  const d = await col.findOne({ id: req.params.id });
+  const [d] = await q('SELECT * FROM devices WHERE id = $1', [req.params.id]);
   if (!d) return res.status(404).send('设备不存在');
 
   const currentClaim = d.claims.find(c => !c.returnedAt);
@@ -187,42 +196,41 @@ app.get('/device/:id', async (req, res) => {
 
 // ─── 更新状态 ─────────────────────────────────────────────────
 app.post('/device/:id/status', async (req, res) => {
-  await col.updateOne(
-    { id: req.params.id },
-    { $set: { status: req.body.status, notes: (req.body.notes || '').trim() } }
+  await q(
+    'UPDATE devices SET status = $1, notes = $2 WHERE id = $3',
+    [req.body.status, (req.body.notes || '').trim(), req.params.id]
   );
   res.redirect(`/device/${req.params.id}`);
 });
 
 // ─── 领用 ─────────────────────────────────────────────────────
 app.post('/device/:id/claim', async (req, res) => {
-  await col.updateOne(
-    { id: req.params.id },
-    { $push: { claims: {
-      claimedBy: req.body.claimedBy.trim(),
-      reason: (req.body.reason || '').trim(),
-      claimedAt: new Date().toLocaleString('zh-CN'),
-      returnedAt: null,
-    }}}
-  );
+  const [d] = await q('SELECT claims FROM devices WHERE id = $1', [req.params.id]);
+  if (!d) return res.status(404).send('设备不存在');
+  const claims = [...d.claims, {
+    claimedBy: req.body.claimedBy.trim(),
+    reason: (req.body.reason || '').trim(),
+    claimedAt: new Date().toLocaleString('zh-CN'),
+    returnedAt: null,
+  }];
+  await q('UPDATE devices SET claims = $1 WHERE id = $2', [JSON.stringify(claims), req.params.id]);
   res.redirect(`/device/${req.params.id}`);
 });
 
 // ─── 归还 ─────────────────────────────────────────────────────
 app.post('/device/:id/return', async (req, res) => {
-  const d = await col.findOne({ id: req.params.id });
-  if (d) {
-    const claims = d.claims.map(c =>
-      !c.returnedAt ? { ...c, returnedAt: new Date().toLocaleString('zh-CN') } : c
-    );
-    await col.updateOne({ id: req.params.id }, { $set: { claims } });
-  }
+  const [d] = await q('SELECT claims FROM devices WHERE id = $1', [req.params.id]);
+  if (!d) return res.status(404).send('设备不存在');
+  const claims = d.claims.map(c =>
+    !c.returnedAt ? { ...c, returnedAt: new Date().toLocaleString('zh-CN') } : c
+  );
+  await q('UPDATE devices SET claims = $1 WHERE id = $2', [JSON.stringify(claims), req.params.id]);
   res.redirect(`/device/${req.params.id}`);
 });
 
 // ─── 二维码页 ─────────────────────────────────────────────────
 app.get('/qr/:id', async (req, res) => {
-  const d = await col.findOne({ id: req.params.id });
+  const [d] = await q('SELECT * FROM devices WHERE id = $1', [req.params.id]);
   if (!d) return res.status(404).send('设备不存在');
 
   const url = `https://${req.headers.host}/device/${d.id}`;
@@ -315,7 +323,7 @@ function html(title, body) {
 </html>`;
 }
 
-connect().then(() => {
+initDb().then(() => {
   app.listen(PORT, '0.0.0.0', () => {
     console.log(`设备管理系统已启动：http://localhost:${PORT}`);
   });
