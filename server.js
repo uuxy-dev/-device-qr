@@ -136,6 +136,23 @@ app.get('/device/:id', async (req, res) => {
       </div>
 
       <div class="card">
+        <h2 class="section-title">修改基本信息</h2>
+        <form method="POST" action="/device/${d.id}/edit" style="display:flex;gap:10px;flex-wrap:wrap">
+          <div class="form-group" style="flex:1;min-width:140px;margin-bottom:0">
+            <label>设备名称</label>
+            <input name="name" value="${d.name}" required>
+          </div>
+          <div class="form-group" style="flex:1;min-width:140px;margin-bottom:0">
+            <label>负责人</label>
+            <input name="owner" value="${d.owner}" required>
+          </div>
+          <div style="display:flex;align-items:flex-end">
+            <button type="submit" class="btn">保存</button>
+          </div>
+        </form>
+      </div>
+
+      <div class="card">
         <h2 class="section-title">更新状态</h2>
         <form method="POST" action="/device/${d.id}/status">
           <div class="form-group">
@@ -192,6 +209,15 @@ app.get('/device/:id', async (req, res) => {
 
     </div>
   `));
+});
+
+// ─── 修改名称/负责人 ──────────────────────────────────────────
+app.post('/device/:id/edit', async (req, res) => {
+  await q(
+    'UPDATE devices SET name = $1, owner = $2 WHERE id = $3',
+    [req.body.name.trim(), req.body.owner.trim(), req.params.id]
+  );
+  res.redirect(`/device/${req.params.id}`);
 });
 
 // ─── 更新状态 ─────────────────────────────────────────────────
