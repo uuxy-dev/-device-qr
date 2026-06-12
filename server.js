@@ -35,10 +35,11 @@ function genId() {
 }
 
 const STATUS_COLOR = {
-  '正常':     '#22c55e',
-  '维修中':   '#f59e0b',
-  '待维护':   '#ef4444',
-  '无法维修': '#6b7280',
+  '正常':       '#22c55e',
+  '维修中':     '#f59e0b',
+  '维修后待测试': '#3b82f6',
+  '待维护':     '#ef4444',
+  '无法维修':   '#6b7280',
 };
 
 app.use(express.json());
@@ -159,8 +160,9 @@ app.get('/device/:id', async (req, res) => {
             <label>设备状态</label>
             <select name="status">
               <option value="正常"     ${d.status === '正常'     ? 'selected' : ''}>正常</option>
-              <option value="维修中"   ${d.status === '维修中'   ? 'selected' : ''}>维修中</option>
-              <option value="待维护"   ${d.status === '待维护'   ? 'selected' : ''}>待维护（请填写故障说明）</option>
+              <option value="维修中"     ${d.status === '维修中'     ? 'selected' : ''}>维修中</option>
+              <option value="维修后待测试" ${d.status === '维修后待测试' ? 'selected' : ''}>维修后待测试</option>
+              <option value="待维护"     ${d.status === '待维护'     ? 'selected' : ''}>待维护（请填写故障说明）</option>
               <option value="无法维修" ${d.status === '无法维修' ? 'selected' : ''}>无法维修</option>
             </select>
           </div>
